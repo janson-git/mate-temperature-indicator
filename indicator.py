@@ -24,10 +24,17 @@ if not indicator_loaded:
 
 from gi.repository import Gtk, GLib
 
+#FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+#FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf"
+FONT_PATH = "/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf"
+DEFAULT_PANEL_SIZE = 32
+
+
 class SensorsIndicator:
     def __init__(self):
         # Режим отображения: 'normal' или 'compact'
         self.mode = 'normal'
+        self.icon_size = self.get_icon_canvas_size()
 
         # Инициализируем индикатор с временной заглушкой
         self.indicator = AppIndicator.Indicator.new(
@@ -81,6 +88,76 @@ class SensorsIndicator:
             self.mode = mode_name
             self.update_data() # Мгновенно обновляем иконку при переключении
 
+    def get_panel_size(self):
+        """ Читает высоту панели MATE; трей принудительно вписывает иконки в квадрат. """
+        try:
+            listed = subprocess.run(
+                ['dconf', 'list', '/org/mate/panel/toplevels/'],
+                capture_output=True, text=True, check=True
+            ).stdout.splitlines()
+            for entry in listed:
+                name = entry.strip().strip('/')
+                if not name:
+                    continue
+                result = subprocess.run(
+                    ['dconf', 'read', f'/org/mate/panel/toplevels/{name}/size'],
+                    capture_output=True, text=True, check=False
+                )
+                value = result.stdout.strip()
+                if value.isdigit():
+                    return max(16, int(value))
+        except Exception:
+            pass
+        return DEFAULT_PANEL_SIZE
+
+    def get_icon_canvas_size(self):
+        """ Квадратный холст (≥ панели), чтобы трей не сжимал широкий PNG. """
+        panel = self.get_panel_size()
+        # 2× даёт более чёткий текст после даунскейла панелью до высоты слота
+        return max(panel * 2, 64)
+
+    def load_font(self, size):
+        try:
+            return ImageFont.truetype(FONT_PATH, size)
+        except OSError:
+            return ImageFont.load_default()
+
+    def text_bbox(self, text, font):
+        left, top, right, bottom = font.getbbox(text)
+        return left, top, right - left, bottom - top
+
+    def text_size(self, text, font):
+        _, _, width, height = self.text_bbox(text, font)
+        return width, height
+
+    def draw_text(self, draw, xy, text, font, fill, anchor="lt"):
+        """ Рисует текст с учётом ink-bbox шрифта (якорь: lt / lm / mm). """
+        x, y = xy
+        left, top, width, height = self.text_bbox(text, font)
+        if anchor == "mm":
+            x -= width / 2
+            y -= height / 2
+        elif anchor == "lm":
+            y -= height / 2
+        draw.text((x - left, y - top), text, font=font, fill=fill)
+
+    def largest_font(self, texts, max_size, pad=4, gap=2):
+        """ Подбирает максимальный кегль, при котором все строки помещаются в квадрат. """
+        size = self.icon_size
+        for font_size in range(max_size, 6, -1):
+            font = self.load_font(font_size)
+            widths = []
+            heights = []
+            for text in texts:
+                w, h = self.text_size(text, font)
+                widths.append(w)
+                heights.append(h)
+            total_h = sum(heights) + gap * (len(texts) - 1)
+            if max(widths) <= size - 2 * pad and total_h <= size - 2 * pad:
+                return font, heights
+        font = self.load_font(7)
+        return font, [self.text_size(t, font)[1] for t in texts]
+
     def get_color_for_temp(self, temp_str):
         """ Возвращает RGB цвет в зависимости от температуры """
         try:
@@ -106,10 +183,11 @@ class SensorsIndicator:
         return (255, 255, 255, 255)        # Белый
 
     def create_image_icon(self, gpu_text, wifi_text, fan_text, path):
-        """ Генерирует PNG-картинку в зависимости от выбранного режима """
-        width, height = 55, 28
-        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        """ Генерирует квадратный PNG под размер слота трея """
+        size = self.icon_size
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
+        cx = size / 2
 
         if self.mode == 'compact':
             # КОМПАКТНЫЙ РЕЖИМ: Выбираем максимальную температуру
@@ -123,42 +201,38 @@ class SensorsIndicator:
                 wifi_val = 0
             
             max_temp = max(gpu_val, wifi_val)
-            max_temp_text = f"{max_temp}°" if max_temp > 0 else "N/A"
-            
-            # Загружаем крупный шрифт для одной цифры
-            try:
-                font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
-            except IOError:
-                font_large = ImageFont.load_default()
-                
+            max_temp_text = f"{max_temp}°" if max_temp > 0 else "--"
+            font, _ = self.largest_font([max_temp_text], max_size=size - 8)
             color = self.get_color_for_temp(max_temp_text)
-            
-            # Центрируем текст по вертикали и горизонтали на холсте 55x28
-            # (Отступы 14 и 4 подобраны для красивого выравнивания двухзначного числа)
-            draw.text((14, 4), max_temp_text, font=font_large, fill=color)
+            self.draw_text(draw, (cx, size / 2), max_temp_text, font, color, anchor="mm")
 
         else:
             # ОБЫЧНЫЙ РЕЖИМ (Две строки: GPU/WiFi и Кулер)
-            try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12)
-            except IOError:
-                font = ImageFont.load_default()
+            line1 = f"{gpu_text}/{wifi_text}"
+            line2 = str(fan_text)
+            font, heights = self.largest_font([line1, line2], max_size=size // 2)
+            gap = 2
+            block_h = heights[0] + gap + heights[1]
+            y1 = (size - block_h) / 2 + heights[0] / 2
+            y2 = y1 + heights[0] / 2 + gap + heights[1] / 2
 
             gpu_color = self.get_color_for_temp(gpu_text)
             wifi_color = self.get_color_for_temp(wifi_text)
             fan_color = self.get_color_for_fan(fan_text)
 
-            # Рисуем "GPU/WiFi" с независимыми цветами
-            draw.text((2, 0), gpu_text, font=font, fill=gpu_color)
-            gpu_width = draw.textlength(gpu_text, font=font) if hasattr(draw, 'textlength') else 18
-            
-            draw.text((2 + gpu_width, 0), "/", font=font, fill=(255, 255, 255, 255))
-            sep_width = draw.textlength("/", font=font) if hasattr(draw, 'textlength') else 6
-            
-            draw.text((2 + gpu_width + sep_width, 0), wifi_text, font=font, fill=wifi_color)
+            # Строка температур с независимыми цветами, выровненная как один блок
+            gpu_w = self.text_size(gpu_text, font)[0]
+            sep_w = self.text_size("/", font)[0]
+            wifi_w = self.text_size(wifi_text, font)[0]
+            line1_w = gpu_w + sep_w + wifi_w
+            x = (size - line1_w) / 2
+            self.draw_text(draw, (x, y1), gpu_text, font, gpu_color, anchor="lm")
+            x += gpu_w
+            self.draw_text(draw, (x, y1), "/", font, (255, 255, 255, 255), anchor="lm")
+            x += sep_w
+            self.draw_text(draw, (x, y1), wifi_text, font, wifi_color, anchor="lm")
 
-            # Рисуем кулер
-            draw.text((2, 13), f"{fan_text}", font=font, fill=fan_color)
+            self.draw_text(draw, (cx, y2), line2, font, fan_color, anchor="mm")
 
         image.save(path, "PNG")
 
@@ -170,9 +244,9 @@ class SensorsIndicator:
             return f"Ошибка получения данных: {e}"
 
     def parse_temperatures(self, text):
-        gpu_temp = "N/A"
-        wifi_temp = "N/A"
-        fan_speed = "N/A"
+        gpu_temp = "--"
+        wifi_temp = "--"
+        fan_speed = "--"
         blocks = text.split('\n\n')
         
         for block in blocks:
