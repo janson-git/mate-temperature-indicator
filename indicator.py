@@ -266,6 +266,11 @@ class SensorsIndicator:
 
         return gpu_temp, wifi_temp, fan_speed
 
+    def format_tooltip(self, gpu_text, wifi_text, fan_text):
+        """ Tooltip всегда показывает обе температуры и вентилятор, независимо от режима. """
+        fan_label = fan_text if fan_text == "--" else f"{fan_text} RPM"
+        return f"GPU: {gpu_text}\nWiFi: {wifi_text}\nFan: {fan_label}"
+
     def update_data(self):
         import time
         full_output = self.get_sensors_output()
@@ -279,6 +284,7 @@ class SensorsIndicator:
         
         # Принудительно обновляем иконку в системном трее
         self.indicator.set_icon_full(current_icon_path, "sensors_icon")
+        self.indicator.set_title(self.format_tooltip(gpu, wifi, fan))
 
         # Обновляем лог в меню
         self.sensors_menu_item.set_label(full_output.strip())
