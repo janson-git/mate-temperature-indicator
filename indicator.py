@@ -19,7 +19,7 @@ for ns in ['AyatanaAppIndicator3', 'AyatanaAppindicator3', 'AppIndicator3']:
         continue
 
 if not indicator_loaded:
-    print("[Ошибка] Не найдена библиотека индикатора.")
+    print("[Error] Indicator library not found.")
     exit(1)
 
 from gi.repository import Gtk, GLib
@@ -48,28 +48,28 @@ class SensorsIndicator:
         self.menu = Gtk.Menu()
         
         # 1. Элемент меню для вывода всех сенсоров (некликабельный)
-        self.sensors_menu_item = Gtk.MenuItem(label="Загрузка данных...")
+        self.sensors_menu_item = Gtk.MenuItem(label="Loading data...")
         self.sensors_menu_item.set_sensitive(False)
         self.menu.append(self.sensors_menu_item)
         self.menu.append(Gtk.SeparatorMenuItem())
         
         # 2. Пункты переключения режимов
         # Создаем первую радио-кнопку
-        self.mode_normal_item = Gtk.RadioMenuItem(label="Температура и вентилятор")
+        self.mode_normal_item = Gtk.RadioMenuItem(label="Temperature and fan")
         self.mode_normal_item.set_active(True)
         self.mode_normal_item.connect("activate", self.on_mode_changed, 'normal')
         self.menu.append(self.mode_normal_item)
         
         # Создаем вторую радио-кнопку в той же группе
         self.mode_compact_item = Gtk.RadioMenuItem.new_with_label_from_widget(
-            self.mode_normal_item, "Максимальная температура"
+            self.mode_normal_item, "Maximum temperature"
         )
         self.mode_compact_item.connect("activate", self.on_mode_changed, 'compact')
         self.menu.append(self.mode_compact_item)
         self.menu.append(Gtk.SeparatorMenuItem())
         
         # 3. Кнопка выхода
-        quit_item = Gtk.MenuItem(label="Выход")
+        quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", Gtk.main_quit)
         self.menu.append(quit_item)
         
@@ -241,7 +241,7 @@ class SensorsIndicator:
             result = subprocess.run(['sensors'], capture_output=True, text=True, check=True)
             return result.stdout
         except Exception as e:
-            return f"Ошибка получения данных: {e}"
+            return f"Error fetching data: {e}"
 
     def parse_temperatures(self, text):
         gpu_temp = "--"
