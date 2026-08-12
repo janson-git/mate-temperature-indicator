@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 gi.require_version('Gtk', '3.0')
 
-# Умный импорт библиотек индикатора
+# Prefer Ayatana, fall back to classic AppIndicator
 indicator_loaded = False
 for ns in ['AyatanaAppIndicator3', 'AyatanaAppindicator3', 'AppIndicator3']:
     try:
@@ -33,11 +33,11 @@ FAN_PROC_PATH = "/proc/acpi/ibm/fan"
 
 class SensorsIndicator:
     def __init__(self):
-        # Режим отображения: 'normal' или 'compact'
+        # Display mode: 'normal' or 'compact'
         self.mode = 'normal'
         self.icon_size = self.get_icon_canvas_size()
 
-        # Инициализируем индикатор с временной заглушкой
+        # Initialize indicator with a temporary placeholder icon
         self.indicator = AppIndicator.Indicator.new(
             "sensors_tray_indicator",
             "/tmp/sensors_tray_icon_init.png",
@@ -45,23 +45,23 @@ class SensorsIndicator:
         )
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
 
-        # Создаем меню
+        # Build menu
         self.menu = Gtk.Menu()
         
-        # 1. Элемент меню для вывода всех сенсоров (некликабельный)
+        # 1. Full sensors dump (non-clickable)
         self.sensors_menu_item = Gtk.MenuItem(label="Loading data...")
         self.sensors_menu_item.set_sensitive(False)
         self.menu.append(self.sensors_menu_item)
         self.menu.append(Gtk.SeparatorMenuItem())
         
-        # 2. Пункты переключения режимов
-        # Создаем первую радио-кнопку
+        # 2. Display mode radio items
+        # First radio button
         self.mode_normal_item = Gtk.RadioMenuItem(label="Temperature and fan")
         self.mode_normal_item.set_active(True)
         self.mode_normal_item.connect("activate", self.on_mode_changed, 'normal')
         self.menu.append(self.mode_normal_item)
         
-        # Создаем вторую радио-кнопку в той же группе
+        # Second radio button in the same group
         self.mode_compact_item = Gtk.RadioMenuItem.new_with_label_from_widget(
             self.mode_normal_item, "Maximum temperature"
         )
@@ -69,7 +69,7 @@ class SensorsIndicator:
         self.menu.append(self.mode_compact_item)
         self.menu.append(Gtk.SeparatorMenuItem())
 
-        # 3. Управление вентилятором (submenu)
+        # 3. Fan control (submenu)
         fan_root = Gtk.MenuItem(label="Set fan speed")
         fan_sub = Gtk.Menu()
         fan_auto_item = Gtk.MenuItem(label="Auto")
@@ -84,7 +84,7 @@ class SensorsIndicator:
         self.menu.append(fan_root)
         self.menu.append(Gtk.SeparatorMenuItem())
         
-        # 4. Кнопка выхода
+        # 4. Quit
         quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", Gtk.main_quit)
         self.menu.append(quit_item)
@@ -92,17 +92,17 @@ class SensorsIndicator:
         self.menu.show_all()
         self.indicator.set_menu(self.menu)
 
-        # Первое обновление
+        # First refresh
         self.update_data()
 
-        # Таймер обновления на 3 секунды
+        # Refresh every 3 seconds
         GLib.timeout_add(3000, self.update_data)
 
     def on_mode_changed(self, widget, mode_name):
-        """ Срабатывает при клике на радио-кнопки переключения режимов """
+        """Handle display mode radio button clicks."""
         if widget.get_active():
             self.mode = mode_name
-            self.update_data() # Мгновенно обновляем иконку при переключении
+            self.update_data()  # Refresh icon immediately on mode switch
 
     def on_fan_auto(self, _widget):
         self.write_fan_commands(["level auto"])
@@ -121,12 +121,12 @@ class SensorsIndicator:
         dialog.destroy()
 
     def write_fan_commands(self, commands):
-        """ Пишет команды в thinkpad fan proc через pkexec (один запрос на действие). """
+        """Write commands to the thinkpad fan proc via pkexec (one auth prompt per action)."""
         if not os.path.exists(FAN_PROC_PATH):
             self.show_error(f"Fan control interface not found:\n{FAN_PROC_PATH}")
             return False
 
-        # Только доверенные строки из нашего кода — экранируем на всякий случай
+        # Commands come only from our code; still escape for the shell
         parts = []
         for command in commands:
             safe = command.replace("'", "'\\''")
@@ -147,7 +147,7 @@ class SensorsIndicator:
             return False
 
         if result.returncode != 0:
-            # Пользователь отменил диалог авторизации — без шумного окна
+            # User cancelled the auth dialog — stay quiet
             stderr = (result.stderr or "").strip()
             if result.returncode in (126, 127) and not stderr:
                 return False
@@ -158,7 +158,7 @@ class SensorsIndicator:
         return True
 
     def get_panel_size(self):
-        """ Читает высоту панели MATE; трей принудительно вписывает иконки в квадрат. """
+        """Read MATE panel height; the tray forces icons into a square slot."""
         try:
             listed = subprocess.run(
                 ['dconf', 'list', '/org/mate/panel/toplevels/'],
@@ -180,9 +180,9 @@ class SensorsIndicator:
         return DEFAULT_PANEL_SIZE
 
     def get_icon_canvas_size(self):
-        """ Квадратный холст (≥ панели), чтобы трей не сжимал широкий PNG. """
+        """Square canvas (>= panel size) so the tray does not squash a wide PNG."""
         panel = self.get_panel_size()
-        # 2× даёт более чёткий текст после даунскейла панелью до высоты слота
+        # 2x gives sharper text after the panel downscales to the slot height
         return max(panel * 2, 64)
 
     def load_font(self, size):
@@ -200,7 +200,7 @@ class SensorsIndicator:
         return width, height
 
     def draw_text(self, draw, xy, text, font, fill, anchor="lt"):
-        """ Рисует текст с учётом ink-bbox шрифта (якорь: lt / lm / mm). """
+        """Draw text using font ink bbox (anchor: lt / lm / mm)."""
         x, y = xy
         left, top, width, height = self.text_bbox(text, font)
         if anchor == "mm":
@@ -211,7 +211,7 @@ class SensorsIndicator:
         draw.text((x - left, y - top), text, font=font, fill=fill)
 
     def largest_font(self, texts, max_size, pad=4, gap=2):
-        """ Подбирает максимальный кегль, при котором все строки помещаются в квадрат. """
+        """Pick the largest font size that fits all lines in the square canvas."""
         size = self.icon_size
         for font_size in range(max_size, 6, -1):
             font = self.load_font(font_size)
@@ -228,38 +228,38 @@ class SensorsIndicator:
         return font, [self.text_size(t, font)[1] for t in texts]
 
     def get_color_for_temp(self, temp_str):
-        """ Возвращает RGB цвет в зависимости от температуры """
+        """Return RGBA color based on temperature."""
         try:
             val = int(re.sub(r'[^\d.]', '', temp_str))
             if val >= 70:
-                return (255, 0, 0, 255)    # Красный
+                return (255, 0, 0, 255)    # Red
             elif val >= 60:
-                return (255, 255, 0, 255)  # Жёлтый
+                return (255, 255, 0, 255)  # Yellow
         except ValueError:
             pass
-        return (255, 255, 255, 255)        # Белый
+        return (255, 255, 255, 255)        # White
 
     def get_color_for_fan(self, fan_str):
-        """ Возвращает RGB цвет в зависимости от оборотов вентилятора """
+        """Return RGBA color based on fan RPM."""
         try:
             val = int(fan_str)
             if val >= 5500:
-                return (255, 0, 0, 255)    # Красный
+                return (255, 0, 0, 255)    # Red
             elif val >= 4000:
-                return (255, 255, 0, 255)  # Жёлтый
+                return (255, 255, 0, 255)  # Yellow
         except ValueError:
             pass
-        return (255, 255, 255, 255)        # Белый
+        return (255, 255, 255, 255)        # White
 
     def create_image_icon(self, gpu_text, wifi_text, fan_text, path):
-        """ Генерирует квадратный PNG под размер слота трея """
+        """Generate a square PNG sized for the tray icon slot."""
         size = self.icon_size
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         cx = size / 2
 
         if self.mode == 'compact':
-            # КОМПАКТНЫЙ РЕЖИМ: Выбираем максимальную температуру
+            # Compact mode: show the maximum of the two temperatures
             try:
                 gpu_val = int(re.sub(r'[^\d.]', '', gpu_text))
             except ValueError:
@@ -276,7 +276,7 @@ class SensorsIndicator:
             self.draw_text(draw, (cx, size / 2), max_temp_text, font, color, anchor="mm")
 
         else:
-            # ОБЫЧНЫЙ РЕЖИМ (Две строки: GPU/WiFi и Кулер)
+            # Normal mode (two lines: GPU/WiFi and fan)
             line1 = f"{gpu_text}/{wifi_text}"
             line2 = str(fan_text)
             font, heights = self.largest_font([line1, line2], max_size=size // 2)
@@ -289,7 +289,7 @@ class SensorsIndicator:
             wifi_color = self.get_color_for_temp(wifi_text)
             fan_color = self.get_color_for_fan(fan_text)
 
-            # Строка температур с независимыми цветами, выровненная как один блок
+            # Temperature line with independent colors, aligned as one block
             gpu_w = self.text_size(gpu_text, font)[0]
             sep_w = self.text_size("/", font)[0]
             wifi_w = self.text_size(wifi_text, font)[0]
@@ -336,7 +336,7 @@ class SensorsIndicator:
         return gpu_temp, wifi_temp, fan_speed
 
     def format_tooltip(self, gpu_text, wifi_text, fan_text):
-        """ Tooltip всегда показывает обе температуры и вентилятор, независимо от режима. """
+        """Tooltip always shows both temperatures and fan, regardless of display mode."""
         fan_label = fan_text if fan_text == "--" else f"{fan_text} RPM"
         return f"GPU: {gpu_text}\nWiFi: {wifi_text}\nFan: {fan_label}"
 
@@ -345,20 +345,20 @@ class SensorsIndicator:
         full_output = self.get_sensors_output()
         gpu, wifi, fan = self.parse_temperatures(full_output)
 
-        # Генерируем уникальный путь к файлу для обхода кэша панели
+        # Unique path to bypass panel icon caching
         current_icon_path = f"/tmp/sensors_tray_icon_{int(time.time() * 1000)}.png"
 
-        # Создаем иконку (логика внутри create_image_icon сама проверит self.mode)
+        # Create icon (create_image_icon checks self.mode)
         self.create_image_icon(gpu, wifi, fan, current_icon_path)
         
-        # Принудительно обновляем иконку в системном трее
+        # Force-refresh the tray icon
         self.indicator.set_icon_full(current_icon_path, "sensors_icon")
         self.indicator.set_title(self.format_tooltip(gpu, wifi, fan))
 
-        # Обновляем лог в меню
+        # Update sensors dump in the menu
         self.sensors_menu_item.set_label(full_output.strip())
 
-        # Очищаем старые временные файлы иконок
+        # Remove old temporary icon files
         try:
             for file in os.listdir("/tmp"):
                 if file.startswith("sensors_tray_icon_") and file.endswith(".png"):
