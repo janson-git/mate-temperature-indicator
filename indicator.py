@@ -28,6 +28,7 @@ from gi.repository import Gtk, GLib
 #FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf"
 FONT_PATH = "/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf"
 DEFAULT_PANEL_SIZE = 32
+FAN_PROC_PATH = "/proc/acpi/ibm/fan"
 
 
 class SensorsIndicator:
@@ -67,8 +68,23 @@ class SensorsIndicator:
         self.mode_compact_item.connect("activate", self.on_mode_changed, 'compact')
         self.menu.append(self.mode_compact_item)
         self.menu.append(Gtk.SeparatorMenuItem())
+
+        # 3. Управление вентилятором (submenu)
+        fan_root = Gtk.MenuItem(label="Set fan speed")
+        fan_sub = Gtk.Menu()
+        fan_auto_item = Gtk.MenuItem(label="Auto")
+        fan_auto_item.connect("activate", self.on_fan_auto)
+        fan_sub.append(fan_auto_item)
+        fan_full_item = Gtk.MenuItem(label="Full speed (2 min)")
+        fan_full_item.connect("activate", self.on_fan_full_speed)
+        fan_sub.append(fan_full_item)
+        fan_root.set_submenu(fan_sub)
+        if not os.path.exists(FAN_PROC_PATH):
+            fan_root.set_sensitive(False)
+        self.menu.append(fan_root)
+        self.menu.append(Gtk.SeparatorMenuItem())
         
-        # 3. Кнопка выхода
+        # 4. Кнопка выхода
         quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", Gtk.main_quit)
         self.menu.append(quit_item)
@@ -87,6 +103,59 @@ class SensorsIndicator:
         if widget.get_active():
             self.mode = mode_name
             self.update_data() # Мгновенно обновляем иконку при переключении
+
+    def on_fan_auto(self, _widget):
+        self.write_fan_commands(["level auto"])
+
+    def on_fan_full_speed(self, _widget):
+        self.write_fan_commands(["level full-speed", "watchdog 120"])
+
+    def show_error(self, message):
+        dialog = Gtk.MessageDialog(
+            message_type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.OK,
+            text=message,
+        )
+        dialog.set_title("Fan control")
+        dialog.run()
+        dialog.destroy()
+
+    def write_fan_commands(self, commands):
+        """ Пишет команды в thinkpad fan proc через pkexec (один запрос на действие). """
+        if not os.path.exists(FAN_PROC_PATH):
+            self.show_error(f"Fan control interface not found:\n{FAN_PROC_PATH}")
+            return False
+
+        # Только доверенные строки из нашего кода — экранируем на всякий случай
+        parts = []
+        for command in commands:
+            safe = command.replace("'", "'\\''")
+            parts.append(f"printf '%s\\n' '{safe}' > '{FAN_PROC_PATH}'")
+        script = " && ".join(parts)
+
+        try:
+            result = subprocess.run(
+                ["pkexec", "sh", "-c", script],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            self.show_error("pkexec not found. Install policykit-1.")
+            return False
+        except Exception as e:
+            self.show_error(f"Failed to run pkexec:\n{e}")
+            return False
+
+        if result.returncode != 0:
+            # Пользователь отменил диалог авторизации — без шумного окна
+            stderr = (result.stderr or "").strip()
+            if result.returncode in (126, 127) and not stderr:
+                return False
+            detail = stderr or f"exit code {result.returncode}"
+            self.show_error(f"Could not set fan mode:\n{detail}")
+            return False
+
+        return True
 
     def get_panel_size(self):
         """ Читает высоту панели MATE; трей принудительно вписывает иконки в квадрат. """
