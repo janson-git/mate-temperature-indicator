@@ -2,6 +2,7 @@
 import re
 import subprocess
 import os
+import time
 import gi
 from PIL import Image, ImageDraw, ImageFont
 
@@ -29,6 +30,7 @@ from gi.repository import Gtk, GLib
 FONT_PATH = "/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf"
 DEFAULT_PANEL_SIZE = 32
 FAN_PROC_PATH = "/proc/acpi/ibm/fan"
+FAN_RPM_TOLERANCE = 4
 
 
 class SensorsIndicator:
@@ -36,6 +38,10 @@ class SensorsIndicator:
         # Display mode: 'normal' or 'compact'
         self.mode = 'normal'
         self.icon_size = self.get_icon_canvas_size()
+        self._font_cache = {}
+        self._last_icon_state = None
+        self._prev_icon_path = None
+        self._cleanup_orphan_icons()
 
         # Initialize indicator with a temporary placeholder icon
         self.indicator = AppIndicator.Indicator.new(
@@ -102,6 +108,7 @@ class SensorsIndicator:
         """Handle display mode radio button clicks."""
         if widget.get_active():
             self.mode = mode_name
+            self._last_icon_state = None
             self.update_data()  # Refresh icon immediately on mode switch
 
     def on_fan_auto(self, _widget):
@@ -186,10 +193,55 @@ class SensorsIndicator:
         return max(panel * 2, 64)
 
     def load_font(self, size):
+        if size in self._font_cache:
+            return self._font_cache[size]
         try:
-            return ImageFont.truetype(FONT_PATH, size)
+            font = ImageFont.truetype(FONT_PATH, size)
         except OSError:
-            return ImageFont.load_default()
+            font = ImageFont.load_default()
+        self._font_cache[size] = font
+        return font
+
+    def parse_fan_rpm(self, fan_text):
+        try:
+            return int(fan_text)
+        except (ValueError, TypeError):
+            return None
+
+    def fans_equivalent(self, prev_rpm, curr_rpm, tolerance=FAN_RPM_TOLERANCE):
+        if prev_rpm is None and curr_rpm is None:
+            return True
+        if prev_rpm is None or curr_rpm is None:
+            return False
+        return abs(prev_rpm - curr_rpm) <= tolerance
+
+    def should_redraw_icon(self, gpu, wifi, fan):
+        if self._last_icon_state is None:
+            return True
+        prev_mode, prev_gpu, prev_wifi, prev_fan_rpm = self._last_icon_state
+        if self.mode != prev_mode:
+            return True
+        if gpu != prev_gpu or wifi != prev_wifi:
+            return True
+        return not self.fans_equivalent(prev_fan_rpm, self.parse_fan_rpm(fan))
+
+    def remember_icon_state(self, gpu, wifi, fan):
+        self._last_icon_state = (self.mode, gpu, wifi, self.parse_fan_rpm(fan))
+
+    def _cleanup_orphan_icons(self):
+        try:
+            for file in os.listdir("/tmp"):
+                if file.startswith("sensors_tray_icon_") and file.endswith(".png"):
+                    os.remove(os.path.join("/tmp", file))
+        except Exception:
+            pass
+
+    def _remove_icon_file(self, path):
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
     def text_bbox(self, text, font):
         left, top, right, bottom = font.getbbox(text)
@@ -341,32 +393,21 @@ class SensorsIndicator:
         return f"GPU: {gpu_text}\nWiFi: {wifi_text}\nFan: {fan_label}"
 
     def update_data(self):
-        import time
         full_output = self.get_sensors_output()
         gpu, wifi, fan = self.parse_temperatures(full_output)
 
-        # Unique path to bypass panel icon caching
-        current_icon_path = f"/tmp/sensors_tray_icon_{int(time.time() * 1000)}.png"
-
-        # Create icon (create_image_icon checks self.mode)
-        self.create_image_icon(gpu, wifi, fan, current_icon_path)
-        
-        # Force-refresh the tray icon
-        self.indicator.set_icon_full(current_icon_path, "sensors_icon")
         self.indicator.set_title(self.format_tooltip(gpu, wifi, fan))
-
-        # Update sensors dump in the menu
         self.sensors_menu_item.set_label(full_output.strip())
 
-        # Remove old temporary icon files
-        try:
-            for file in os.listdir("/tmp"):
-                if file.startswith("sensors_tray_icon_") and file.endswith(".png"):
-                    full_file_path = os.path.join("/tmp", file)
-                    if full_file_path != current_icon_path:
-                        os.remove(full_file_path)
-        except Exception:
-            pass
+        if not self.should_redraw_icon(gpu, wifi, fan):
+            return True
+
+        current_icon_path = f"/tmp/sensors_tray_icon_{int(time.time() * 1000)}.png"
+        self.create_image_icon(gpu, wifi, fan, current_icon_path)
+        self.indicator.set_icon_full(current_icon_path, "sensors_icon")
+        self._remove_icon_file(self._prev_icon_path)
+        self._prev_icon_path = current_icon_path
+        self.remember_icon_state(gpu, wifi, fan)
 
         return True
 
