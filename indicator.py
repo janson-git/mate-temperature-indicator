@@ -4,6 +4,7 @@ import subprocess
 import os
 import time
 import gi
+import string
 from PIL import Image, ImageDraw, ImageFont
 
 gi.require_version('Gtk', '3.0')
@@ -215,18 +216,18 @@ class SensorsIndicator:
             return False
         return abs(prev_rpm - curr_rpm) <= tolerance
 
-    def should_redraw_icon(self, gpu, wifi, fan):
+    def should_redraw_icon(self, gpu, cpu, wifi, fan):
         if self._last_icon_state is None:
             return True
-        prev_mode, prev_gpu, prev_wifi, prev_fan_rpm = self._last_icon_state
+        prev_mode, prev_gpu, prev_cpu, prev_wifi, prev_fan_rpm = self._last_icon_state
         if self.mode != prev_mode:
             return True
-        if gpu != prev_gpu or wifi != prev_wifi:
+        if gpu != prev_gpu or wifi != prev_wifi or cpu != prev_cpu:
             return True
         return not self.fans_equivalent(prev_fan_rpm, self.parse_fan_rpm(fan))
 
-    def remember_icon_state(self, gpu, wifi, fan):
-        self._last_icon_state = (self.mode, gpu, wifi, self.parse_fan_rpm(fan))
+    def remember_icon_state(self, gpu, cpu, wifi, fan):
+        self._last_icon_state = (self.mode, gpu, cpu, wifi, self.parse_fan_rpm(fan))
 
     def _cleanup_orphan_icons(self):
         try:
@@ -262,7 +263,7 @@ class SensorsIndicator:
             y -= height / 2
         draw.text((x - left, y - top), text, font=font, fill=fill)
 
-    def largest_font(self, texts, max_size, pad=4, gap=2):
+    def largest_font(self, texts, max_size, pad=0, gap=1):
         """Pick the largest font size that fits all lines in the square canvas."""
         size = self.icon_size
         for font_size in range(max_size, 6, -1):
@@ -303,57 +304,66 @@ class SensorsIndicator:
             pass
         return (255, 255, 255, 255)        # White
 
-    def create_image_icon(self, gpu_text, wifi_text, fan_text, path):
+    def create_image_icon(self, gpu_text, cpu_text, wifi_text, fan_text, path):
         """Generate a square PNG sized for the tray icon slot."""
         size = self.icon_size
         image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
         cx = size / 2
 
+        try:
+            gpu_val = int(re.sub(r'[^\d.]', '', gpu_text))
+        except ValueError:
+            gpu_val = 0
+        try:
+            cpu_val = int(re.sub(r'[^\d.]', '', cpu_text))
+        except ValueError:
+            cpu_val = 0
+
         if self.mode == 'compact':
-            # Compact mode: show the maximum of the two temperatures
-            try:
-                gpu_val = int(re.sub(r'[^\d.]', '', gpu_text))
-            except ValueError:
-                gpu_val = 0
+            # Compact mode: show the maximum of the three temperatures
             try:
                 wifi_val = int(re.sub(r'[^\d.]', '', wifi_text))
             except ValueError:
                 wifi_val = 0
             
-            max_temp = max(gpu_val, wifi_val)
+            max_temp = max(cpu_val, gpu_val, wifi_val)
             max_temp_text = f"{max_temp}°" if max_temp > 0 else "--"
             font, _ = self.largest_font([max_temp_text], max_size=size - 8)
             color = self.get_color_for_temp(max_temp_text)
             self.draw_text(draw, (cx, size / 2), max_temp_text, font, color, anchor="mm")
 
         else:
-            # Normal mode (two lines: GPU/WiFi and fan)
-            line1 = f"{gpu_text}/{wifi_text}"
-            line2 = str(fan_text)
-            font, heights = self.largest_font([line1, line2], max_size=size // 2)
-            gap = 2
-            block_h = heights[0] + gap + heights[1]
+            # Normal mode (three lines: CPU/GPU max, WiFi, fan)
+            max_tmp_text = gpu_text
+            if gpu_val < cpu_val:
+                max_tmp_text = cpu_text
+
+            line1 = max_tmp_text
+            line2 = wifi_text
+            line3 = str(fan_text)
+            lines = [line1, line2, line3]
+            font, heights = self.largest_font(lines, max_size=size // 3)
+            # Prefer one size larger than the strict fit for readability
+            bumped = getattr(font, "size", None)
+            if bumped is not None:
+                font = self.load_font(bumped + 1)
+                heights = [self.text_size(t, font)[1] for t in lines]
+            gap = 1
+            block_h = sum(heights) + gap * 2
             y1 = (size - block_h) / 2 + heights[0] / 2
             y2 = y1 + heights[0] / 2 + gap + heights[1] / 2
+            y3 = y2 + heights[1] / 2 + gap + heights[2] / 2
 
-            gpu_color = self.get_color_for_temp(gpu_text)
-            wifi_color = self.get_color_for_temp(wifi_text)
-            fan_color = self.get_color_for_fan(fan_text)
-
-            # Temperature line with independent colors, aligned as one block
-            gpu_w = self.text_size(gpu_text, font)[0]
-            sep_w = self.text_size("/", font)[0]
-            wifi_w = self.text_size(wifi_text, font)[0]
-            line1_w = gpu_w + sep_w + wifi_w
-            x = (size - line1_w) / 2
-            self.draw_text(draw, (x, y1), gpu_text, font, gpu_color, anchor="lm")
-            x += gpu_w
-            self.draw_text(draw, (x, y1), "/", font, (255, 255, 255, 255), anchor="lm")
-            x += sep_w
-            self.draw_text(draw, (x, y1), wifi_text, font, wifi_color, anchor="lm")
-
-            self.draw_text(draw, (cx, y2), line2, font, fan_color, anchor="mm")
+            self.draw_text(
+                draw, (cx, y1), line1, font, self.get_color_for_temp(line1), anchor="mm"
+            )
+            self.draw_text(
+                draw, (cx, y2), line2, font, self.get_color_for_temp(line2), anchor="mm"
+            )
+            self.draw_text(
+                draw, (cx, y3), line3, font, self.get_color_for_fan(line3), anchor="mm"
+            )
 
         image.save(path, "PNG")
 
@@ -366,6 +376,7 @@ class SensorsIndicator:
 
     def parse_temperatures(self, text):
         gpu_temp = "--"
+        cpu_temp = "--"
         wifi_temp = "--"
         fan_speed = "--"
         blocks = text.split('\n\n')
@@ -378,36 +389,39 @@ class SensorsIndicator:
             
             if "thinkpad-isa-0000" in block:
                 gpu_match = re.search(r'GPU:\s+\+?([\d.]+)', block)
+                cpu_match = re.search(r'CPU:\s+\+?([\d.]+)', block)
                 if gpu_match:
                     gpu_temp = f"{int(float(gpu_match.group(1)))}°"
+                if cpu_match:
+                    cpu_temp = f"{int(float(cpu_match.group(1)))}°"
 
                 fan_match = re.search(r'fan1:\s+(\d+)\s+RPM', block)
                 if fan_match:
                     fan_speed = fan_match.group(1)
 
-        return gpu_temp, wifi_temp, fan_speed
+        return gpu_temp, cpu_temp, wifi_temp, fan_speed
 
-    def format_tooltip(self, gpu_text, wifi_text, fan_text):
+    def format_tooltip(self, gpu_text, cpu_text, wifi_text, fan_text):
         """Tooltip always shows both temperatures and fan, regardless of display mode."""
         fan_label = fan_text if fan_text == "--" else f"{fan_text} RPM"
-        return f"GPU: {gpu_text}\nWiFi: {wifi_text}\nFan: {fan_label}"
+        return f"CPU: {cpu_text}\nGPU: {gpu_text}\nWiFi: {wifi_text}\nFan: {fan_label}"
 
     def update_data(self):
         full_output = self.get_sensors_output()
-        gpu, wifi, fan = self.parse_temperatures(full_output)
+        gpu, cpu, wifi, fan = self.parse_temperatures(full_output)
 
-        self.indicator.set_title(self.format_tooltip(gpu, wifi, fan))
+        self.indicator.set_title(self.format_tooltip(gpu, cpu, wifi, fan))
         self.sensors_menu_item.set_label(full_output.strip())
 
-        if not self.should_redraw_icon(gpu, wifi, fan):
+        if not self.should_redraw_icon(gpu, cpu, wifi, fan):
             return True
 
         current_icon_path = f"/tmp/sensors_tray_icon_{int(time.time() * 1000)}.png"
-        self.create_image_icon(gpu, wifi, fan, current_icon_path)
+        self.create_image_icon(gpu, cpu, wifi, fan, current_icon_path)
         self.indicator.set_icon_full(current_icon_path, "sensors_icon")
         self._remove_icon_file(self._prev_icon_path)
         self._prev_icon_path = current_icon_path
-        self.remember_icon_state(gpu, wifi, fan)
+        self.remember_icon_state(gpu, cpu, wifi, fan)
 
         return True
 
